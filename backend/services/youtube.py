@@ -9,8 +9,6 @@ Uses:
 import re
 import logging
 from typing import Optional
-from youtube_transcript_api import YouTubeTranscriptApi
-from googleapiclient.discovery import build
 from config import YOUTUBE_API_KEY
 
 logger = logging.getLogger(__name__)
@@ -57,6 +55,7 @@ def get_video_metadata(video_id: str) -> dict:
     Returns dict with: title, channel, duration_seconds, duration_label, thumbnail_url
     """
     try:
+        from googleapiclient.discovery import build
         youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
         response = (
             youtube.videos()
@@ -93,12 +92,29 @@ def get_transcript(video_id: str) -> list[dict]:
 
     Returns list of dicts: [{"text": "...", "start": 0.0, "duration": 3.5}, ...]
 
-    Tries auto-generated captions if manual captions aren't available.
+    Compatible with youtube-transcript-api v0.6.x
     """
     try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+
+        # Try fetching directly — simplest approach, works on most versions
+        try:
+            raw = YouTubeTranscriptApi.get_transcript(video_id, languages=["en"])
+            # Normalize: ensure each entry has text, start, duration
+            return [
+                {
+                    "text": str(entry.get("text", entry.get("value", ""))),
+                    "start": float(entry.get("start", entry.get("offset", 0))),
+                    "duration": float(entry.get("duration", 3)),
+                }
+                for entry in raw
+            ]
+        except Exception as e1:
+            logger.warning(f"Direct transcript fetch failed: {e1}, trying fallback...")
+
+        # Fallback: list transcripts and pick one
         transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
 
-        # Try to find English transcript (manual first, then auto-generated)
         transcript = None
         try:
             transcript = transcript_list.find_manually_created_transcript(["en"])
@@ -106,7 +122,6 @@ def get_transcript(video_id: str) -> list[dict]:
             try:
                 transcript = transcript_list.find_generated_transcript(["en"])
             except Exception:
-                # Fall back to first available transcript and translate to English
                 for t in transcript_list:
                     transcript = t.translate("en")
                     break
@@ -114,7 +129,26 @@ def get_transcript(video_id: str) -> list[dict]:
         if transcript is None:
             raise ValueError(f"No transcript available for video {video_id}")
 
-        return transcript.fetch()
+        raw = transcript.fetch()
+
+        # Normalize output format
+        result = []
+        for entry in raw:
+            if isinstance(entry, dict):
+                result.append({
+                    "text": str(entry.get("text", "")),
+                    "start": float(entry.get("start", 0)),
+                    "duration": float(entry.get("duration", 3)),
+                })
+            else:
+                # Some versions return objects with attributes
+                result.append({
+                    "text": str(getattr(entry, "text", getattr(entry, "value", ""))),
+                    "start": float(getattr(entry, "start", getattr(entry, "offset", 0))),
+                    "duration": float(getattr(entry, "duration", 3)),
+                })
+
+        return result
 
     except Exception as e:
         logger.error(f"Failed to fetch transcript for {video_id}: {e}")

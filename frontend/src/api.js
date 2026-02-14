@@ -4,7 +4,9 @@
  * Communicates with the FastAPI backend for video analysis.
  */
 
-const API_BASE = process.env.REACT_APP_API_URL || "http://localhost:8000";
+// In production, use relative URL so Vercel rewrites work (see vercel.json)
+// In development, point to local backend
+const API_BASE = process.env.REACT_APP_API_URL || "";
 
 export async function startAnalysis(url) {
   const res = await fetch(`${API_BASE}/api/analyze`, {
