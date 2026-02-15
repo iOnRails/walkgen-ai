@@ -10,7 +10,7 @@ import logging
 import re
 from typing import Optional
 from google import genai
-from google.genai.types import Part
+from google.genai import types
 from config import GEMINI_API_KEY
 from models import Segment, SegmentType, Difficulty
 
@@ -129,17 +129,17 @@ Return the complete JSON analysis covering the entire video."""
         response = get_client().models.generate_content(
             model="gemini-2.5-flash",
             contents=[
-                Part.from_uri(
+                types.Part.from_uri(
                     file_uri=youtube_url,
                     mime_type="video/webm",
                 ),
                 user_message,
             ],
-            config={
-                "system_instruction": SYSTEM_PROMPT,
-                "max_output_tokens": 8000,
-                "temperature": 0.3,
-            },
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                max_output_tokens=8000,
+                temperature=0.3,
+            ),
         )
 
         response_text = response.text
