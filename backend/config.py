@@ -10,6 +10,11 @@ CORS_ORIGINS = os.getenv(
     "http://localhost:3000,https://walkgen-ai.vercel.app"
 ).split(",")
 
+# Proxy for YouTube transcript fetching (YouTube blocks cloud IPs)
+# Sign up free at https://www.webshare.io and get your proxy credentials
+PROXY_USERNAME = os.getenv("PROXY_USERNAME", "")
+PROXY_PASSWORD = os.getenv("PROXY_PASSWORD", "")
+
 # Claude model to use for analysis
 CLAUDE_MODEL = "claude-sonnet-4-5-20250929"
 
