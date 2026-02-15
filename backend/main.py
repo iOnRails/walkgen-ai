@@ -31,7 +31,7 @@ from services.youtube import (
     get_video_metadata,
     search_videos,
 )
-from services.analyzer import analyze_video
+from services.analyzer import analyze_video as run_gemini_analysis
 from services.cache import (
     init_db,
     get_cached_walkthrough,
@@ -301,12 +301,11 @@ async def run_analysis(job_id: str, video_id: str):
         jobs[job_id]["message"] = "Gemini is watching and analyzing the video..."
 
         result = await asyncio.to_thread(
-            lambda: analyze_video(
-                video_id=video_id,
-                video_title=metadata["title"],
-                video_duration_seconds=metadata["duration_seconds"],
-                channel_name=metadata["channel"],
-            )
+            run_gemini_analysis,
+            video_id,
+            metadata["title"],
+            metadata["duration_seconds"],
+            metadata["channel"],
         )
 
         jobs[job_id]["progress"] = 90
