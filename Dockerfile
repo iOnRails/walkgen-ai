@@ -7,6 +7,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY backend/ .
 
+# Remove any cached bytecode
+RUN find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+
 # Create directory for SQLite cache
 RUN mkdir -p /data
 
