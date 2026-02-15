@@ -31,6 +31,7 @@ from services.youtube import (
     get_video_metadata,
     get_transcript,
     format_transcript_for_analysis,
+    search_videos,
 )
 from services.analyzer import analyze_transcript
 from services.cache import (
@@ -101,6 +102,24 @@ async def browse_popular(limit: int = Query(default=10, le=50)):
 async def browse_search(q: str = Query(..., min_length=1), limit: int = Query(default=20, le=50)):
     """Search cached walkthroughs by game, video title, or channel."""
     return {"query": q, "walkthroughs": search_walkthroughs(q, limit)}
+
+
+# ─── YouTube Search (AI Find) ───
+
+@app.get("/api/youtube/search")
+async def youtube_search(q: str = Query(..., min_length=2), limit: int = Query(default=8, le=20)):
+    """
+    Search YouTube for gameplay walkthrough videos.
+
+    The query is automatically enhanced with 'walkthrough gameplay commentary'
+    to find videos with spoken commentary (needed for transcript analysis).
+    Filters out short videos (<2 min) that are unlikely to be walkthroughs.
+    """
+    try:
+        results = search_videos(q, max_results=limit)
+        return {"query": q, "results": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"YouTube search failed: {str(e)}")
 
 
 # ─── Analysis ───
