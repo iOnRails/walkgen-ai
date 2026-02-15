@@ -95,16 +95,8 @@ def analyze_video(
 
     Gemini watches the video and identifies gameplay segments without
     needing any transcript or commentary.
-
-    Args:
-        video_id: YouTube video ID
-        video_title: Title of the YouTube video
-        video_duration_seconds: Total video length in seconds
-        channel_name: YouTube channel name
-
-    Returns:
-        Dict with keys: game_title, segments, summary
     """
+    logger.info(f"analyze_video called with: video_id={video_id}, title={video_title}, duration={video_duration_seconds}, channel={channel_name}")
     youtube_url = f"https://www.youtube.com/watch?v={video_id}"
 
     user_message = f"""Watch and analyze this gameplay walkthrough video. Identify all distinct segments.
