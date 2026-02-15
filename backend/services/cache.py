@@ -16,7 +16,12 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = Path(__file__).parent.parent / "walkgen_cache.db"
+# Use /data for persistent storage (Railway Volume), fallback to app dir for local dev
+_data_dir = Path("/data")
+if _data_dir.exists() and _data_dir.is_dir():
+    DB_PATH = _data_dir / "walkgen_cache.db"
+else:
+    DB_PATH = Path(__file__).parent.parent / "walkgen_cache.db"
 
 
 def get_connection() -> sqlite3.Connection:
