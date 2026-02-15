@@ -301,11 +301,12 @@ async def run_analysis(job_id: str, video_id: str):
         jobs[job_id]["message"] = "Gemini is watching and analyzing the video..."
 
         result = await asyncio.to_thread(
-            analyze_video,
-            video_id,
-            metadata["title"],
-            metadata["duration_seconds"],
-            metadata["channel"],
+            lambda: analyze_video(
+                video_id=video_id,
+                video_title=metadata["title"],
+                video_duration_seconds=metadata["duration_seconds"],
+                channel_name=metadata["channel"],
+            )
         )
 
         jobs[job_id]["progress"] = 90
