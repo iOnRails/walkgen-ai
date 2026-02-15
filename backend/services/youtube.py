@@ -2,18 +2,14 @@
 YouTube video metadata and transcript extraction service.
 
 Uses:
-- Supadata.ai API (free, 200 req/month) — primary transcript source (works from cloud)
-- youtube-transcript-api v1.2+ (no API key needed) — fallback
+- youtube-transcript-api v1.2+ (no API key needed) with Webshare residential proxy
 - YouTube Data API v3 (API key required) for metadata (title, duration, channel)
 """
 
 import re
-import json
 import logging
 from typing import Optional
-from urllib.request import urlopen, Request
-from urllib.error import URLError
-from config import YOUTUBE_API_KEY, PROXY_USERNAME, PROXY_PASSWORD, SUPADATA_API_KEY
+from config import YOUTUBE_API_KEY, PROXY_USERNAME, PROXY_PASSWORD
 
 logger = logging.getLogger(__name__)
 
@@ -112,45 +108,6 @@ def get_video_metadata(video_id: str) -> dict:
         raise
 
 
-def _get_transcript_supadata(video_id: str) -> list[dict]:
-    """
-    Fetch transcript using Supadata.ai API (works from cloud servers).
-    Free tier: 200 requests/month, no credit card needed.
-    """
-    if not SUPADATA_API_KEY:
-        raise ValueError("SUPADATA_API_KEY not configured")
-
-    url = f"https://api.supadata.ai/v1/youtube/transcript?videoId={video_id}&text=false"
-    req = Request(url, headers={
-        "x-api-key": SUPADATA_API_KEY,
-        "Accept": "application/json",
-    })
-
-    try:
-        with urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode())
-    except URLError as e:
-        raise ValueError(f"Supadata API request failed: {e}")
-
-    # Supadata returns: {"content": [{"text": "...", "startSeconds": 0, "endSeconds": 3}, ...]}
-    content = data.get("content", [])
-    if not content:
-        raise ValueError("Supadata returned empty transcript")
-
-    result = []
-    for entry in content:
-        start = float(entry.get("startSeconds", entry.get("start", 0)))
-        end = float(entry.get("endSeconds", entry.get("end", start + 3)))
-        result.append({
-            "text": entry.get("text", ""),
-            "start": start,
-            "duration": end - start,
-        })
-
-    logger.info(f"Supadata: got {len(result)} transcript entries for {video_id}")
-    return result
-
-
 def _get_transcript_ytt(video_id: str) -> list[dict]:
     """Fetch transcript using youtube-transcript-api (may be blocked on cloud servers)."""
     ytt = _get_ytt_api()
@@ -186,36 +143,18 @@ def get_transcript(video_id: str) -> list[dict]:
 
     Returns list of dicts: [{"text": "...", "start": 0.0, "duration": 3.5}, ...]
 
-    Tries multiple sources in order:
-    1. Supadata.ai API (works from cloud, free 200 req/month)
-    2. youtube-transcript-api with proxy (if configured)
-    3. youtube-transcript-api direct (works from home IPs)
+    Uses youtube-transcript-api with Webshare residential proxy (if configured).
     """
-    errors = []
-
-    # Method 1: Supadata.ai (most reliable from cloud)
-    if SUPADATA_API_KEY:
-        try:
-            return _get_transcript_supadata(video_id)
-        except Exception as e:
-            logger.warning(f"Supadata failed: {e}")
-            errors.append(f"Supadata: {e}")
-
-    # Method 2: youtube-transcript-api (with proxy if configured)
     try:
         return _get_transcript_ytt(video_id)
     except Exception as e:
-        logger.warning(f"youtube-transcript-api failed: {e}")
-        errors.append(f"YTT: {e}")
-
-    # All methods failed
-    error_msg = " | ".join(errors)
-    raise ValueError(
-        f"Could not fetch transcript for video {video_id}. "
-        f"YouTube blocks cloud server IPs. "
-        f"Set up SUPADATA_API_KEY (free at supadata.ai) to fix this. "
-        f"Details: {error_msg}"
-    )
+        logger.error(f"Transcript fetch failed for {video_id}: {e}")
+        raise ValueError(
+            f"Could not fetch transcript for video {video_id}. "
+            f"Make sure PROXY_USERNAME and PROXY_PASSWORD are set in Railway "
+            f"with your Webshare residential proxy credentials. "
+            f"Error: {e}"
+        )
 
 
 def search_videos(query: str, max_results: int = 8) -> list[dict]:
