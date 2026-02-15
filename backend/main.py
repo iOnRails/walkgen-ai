@@ -29,11 +29,9 @@ from models import (
 from services.youtube import (
     extract_video_id,
     get_video_metadata,
-    get_transcript,
-    format_transcript_for_analysis,
     search_videos,
 )
-from services.analyzer import analyze_transcript
+from services.analyzer import analyze_video
 from services.cache import (
     init_db,
     get_cached_walkthrough,
@@ -115,7 +113,7 @@ async def youtube_search(q: str = Query(..., min_length=2), limit: int = Query(d
     Search YouTube for gameplay walkthrough videos.
 
     The query is automatically enhanced with 'walkthrough gameplay commentary'
-    to find videos with spoken commentary (needed for transcript analysis).
+    to find relevant gaming videos for analysis.
     Filters out short videos (<2 min) that are unlikely to be walkthroughs.
     """
     try:
@@ -283,9 +281,8 @@ async def run_analysis(job_id: str, video_id: str):
     """
     Full analysis pipeline:
     1. Fetch video metadata from YouTube
-    2. Extract transcript/captions
-    3. Send to Claude for AI analysis
-    4. Save to cache for future instant access
+    2. Send video to Gemini for direct visual analysis
+    3. Save to cache for future instant access
     """
     try:
         # Step 1: Fetch metadata
@@ -298,27 +295,14 @@ async def run_analysis(job_id: str, video_id: str):
         jobs[job_id]["progress"] = 20
         jobs[job_id]["message"] = f"Found: {metadata['title']}"
 
-        # Step 2: Fetch transcript
-        jobs[job_id]["progress"] = 30
-        jobs[job_id]["message"] = "Extracting video transcript..."
-
-        transcript = await asyncio.to_thread(get_transcript, video_id)
-        formatted = format_transcript_for_analysis(transcript)
-
-        if not formatted:
-            raise ValueError("No transcript available. Video needs captions/subtitles.")
-
-        jobs[job_id]["progress"] = 45
-        jobs[job_id]["message"] = f"Transcript: {len(transcript)} entries. Sending to AI..."
-
-        # Step 3: AI analysis
+        # Step 2: AI analysis (Gemini watches the video directly)
         jobs[job_id]["status"] = "analyzing"
-        jobs[job_id]["progress"] = 50
-        jobs[job_id]["message"] = "AI is analyzing gameplay segments..."
+        jobs[job_id]["progress"] = 30
+        jobs[job_id]["message"] = "Gemini is watching and analyzing the video..."
 
         result = await asyncio.to_thread(
-            analyze_transcript,
-            formatted,
+            analyze_video,
+            video_id,
             metadata["title"],
             metadata["duration_seconds"],
             metadata["channel"],

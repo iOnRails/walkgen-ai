@@ -1,32 +1,36 @@
 """
 AI-powered gameplay segment analyzer.
 
-Takes a formatted transcript from a gameplay video and uses Claude to identify
-and classify segments (boss fights, puzzles, exploration, collectibles, cutscenes).
+Uses Google Gemini to analyze YouTube gameplay videos directly (no transcript needed).
+Gemini watches the video visually and identifies gameplay segments.
 """
 
 import json
 import logging
+import re
 from typing import Optional
-from anthropic import Anthropic
-from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, TRANSCRIPT_CHUNK_SIZE
+from google import genai
+from google.genai.types import Part
+from config import GEMINI_API_KEY
 from models import Segment, SegmentType, Difficulty
 
 logger = logging.getLogger(__name__)
 
 _client = None
 
+
 def get_client():
     """Lazy init so the app starts even if the key isn't set yet."""
     global _client
     if _client is None:
-        _client = Anthropic(api_key=ANTHROPIC_API_KEY)
+        _client = genai.Client(api_key=GEMINI_API_KEY)
     return _client
 
-SYSTEM_PROMPT = """You are WalkGen AI, an expert video game walkthrough analyst. Your job is to analyze
-gameplay video transcripts and identify distinct segments with their types.
 
-You understand gaming terminology deeply: boss fights, puzzle mechanics, exploration sequences,
+SYSTEM_PROMPT = """You are WalkGen AI, an expert video game walkthrough analyst. Your job is to watch
+gameplay videos and identify distinct segments with their types.
+
+You understand gaming deeply: boss fights, puzzle mechanics, exploration sequences,
 collectible hunts, cutscenes, tutorials, and combat encounters.
 
 SEGMENT TYPES:
@@ -47,7 +51,7 @@ DIFFICULTY RATINGS (for boss/puzzle/combat segments only):
 
 For each segment, provide:
 1. A clear, descriptive label (e.g., "Boss: Margit the Fell Omen")
-2. Start and end timestamps (from the transcript timestamps)
+2. Start and end timestamps (in seconds from the video)
 3. A helpful description with strategy tips where relevant
 4. Relevant searchable tags
 5. Difficulty rating (for boss/puzzle/combat only)
@@ -73,24 +77,27 @@ IMPORTANT RULES:
 - Segments should not overlap
 - Segments should cover the full video timeline
 - Merge very short segments (<30 seconds) into adjacent ones
-- Be specific in labels — use actual boss/area/item names from the transcript
+- Be specific in labels — use actual boss/area/item names you see or hear in the video
 - Tags should be lowercase, searchable keywords
 - difficulty is null for exploration/collectible/cutscene segments
 - Timestamps must be integers (seconds)
 """
 
 
-def analyze_transcript(
-    formatted_transcript: str,
+def analyze_video(
+    video_id: str,
     video_title: str,
     video_duration_seconds: int,
     channel_name: str,
 ) -> dict:
     """
-    Send the transcript to Claude for segment analysis.
+    Send the YouTube video directly to Gemini for visual analysis.
+
+    Gemini watches the video and identifies gameplay segments without
+    needing any transcript or commentary.
 
     Args:
-        formatted_transcript: Timestamped transcript text
+        video_id: YouTube video ID
         video_title: Title of the YouTube video
         video_duration_seconds: Total video length in seconds
         channel_name: YouTube channel name
@@ -98,43 +105,44 @@ def analyze_transcript(
     Returns:
         Dict with keys: game_title, segments, summary
     """
-    # Build the user message with context
-    user_message = f"""Analyze this gameplay walkthrough video and identify all segments.
+    youtube_url = f"https://www.youtube.com/watch?v={video_id}"
+
+    user_message = f"""Watch and analyze this gameplay walkthrough video. Identify all distinct segments.
 
 VIDEO INFO:
 - Title: {video_title}
 - Channel: {channel_name}
 - Duration: {video_duration_seconds} seconds
 
-TRANSCRIPT:
-{formatted_transcript}
-
-Identify every distinct segment in this walkthrough. Pay attention to:
-- When the narrator mentions boss names or says "boss fight", "boss encounter"
-- When puzzles or mechanics are being explained
-- When exploring new areas or backtracking
-- When collecting items, secrets, or upgrade materials
-- When cutscenes or story moments occur
+Pay attention to:
+- Boss encounters and major enemy fights (look for health bars, arena transitions)
+- Puzzles and mechanics (environmental interactions, switches, levers)
+- Exploration of new areas (map transitions, new environments)
+- Item pickups, secrets, collectibles
+- Cutscenes and story moments (dialogue, cinematics)
 - Tutorial/explanation sections
+- Regular combat encounters
 
-Return the complete JSON analysis."""
-
-    # If transcript is very long, we may need to chunk it
-    if len(formatted_transcript) > TRANSCRIPT_CHUNK_SIZE * 3:
-        return _analyze_chunked(
-            formatted_transcript, video_title, video_duration_seconds, channel_name
-        )
+Return the complete JSON analysis covering the entire video."""
 
     try:
-        response = get_client().messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=8000,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_message}],
+        response = get_client().models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[
+                Part.from_uri(
+                    file_uri=youtube_url,
+                    mime_type="video/webm",
+                ),
+                user_message,
+            ],
+            config={
+                "system_instruction": SYSTEM_PROMPT,
+                "max_output_tokens": 8000,
+                "temperature": 0.3,
+            },
         )
 
-        # Extract JSON from response
-        response_text = response.content[0].text
+        response_text = response.text
         result = _extract_json(response_text)
 
         # Validate and number segments
@@ -147,76 +155,12 @@ Return the complete JSON analysis."""
         }
 
     except Exception as e:
-        logger.error(f"Analysis failed: {e}")
+        logger.error(f"Gemini analysis failed: {e}")
         raise
 
 
-def _analyze_chunked(
-    transcript: str,
-    video_title: str,
-    duration: int,
-    channel: str,
-) -> dict:
-    """
-    For very long videos, analyze the transcript in chunks and merge results.
-    """
-    lines = transcript.split("\n")
-    chunk_size = len(lines) // 3  # Split into 3 chunks
-    chunks = [
-        "\n".join(lines[i : i + chunk_size])
-        for i in range(0, len(lines), chunk_size)
-    ]
-
-    all_segments = []
-    game_title = None
-    summaries = []
-
-    for i, chunk in enumerate(chunks):
-        chunk_label = f"Part {i + 1}/{len(chunks)}"
-        user_message = f"""Analyze this SECTION of a gameplay walkthrough ({chunk_label}).
-
-VIDEO: {video_title} by {channel} ({duration}s total)
-
-TRANSCRIPT SECTION:
-{chunk}
-
-Return JSON with segments found in this section only."""
-
-        try:
-            response = get_client().messages.create(
-                model=CLAUDE_MODEL,
-                max_tokens=4000,
-                system=SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_message}],
-            )
-
-            result = _extract_json(response.content[0].text)
-            all_segments.extend(result.get("segments", []))
-
-            if not game_title:
-                game_title = result.get("game_title")
-
-            if result.get("summary"):
-                summaries.append(result["summary"])
-
-        except Exception as e:
-            logger.warning(f"Chunk {i + 1} analysis failed: {e}")
-            continue
-
-    segments = _validate_segments(all_segments, duration)
-
-    return {
-        "game_title": game_title or _guess_game_from_title(video_title),
-        "segments": segments,
-        "summary": " ".join(summaries) if summaries else "AI-generated walkthrough.",
-    }
-
-
 def _extract_json(text: str) -> dict:
-    """Extract JSON from Claude's response, handling markdown code blocks."""
-    # Try to find JSON in code blocks first
-    import re
-
+    """Extract JSON from Gemini's response, handling markdown code blocks."""
     code_block = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
     if code_block:
         return json.loads(code_block.group(1))
@@ -291,7 +235,6 @@ def _validate_segments(segments: list[dict], total_duration: int) -> list[dict]:
 
 def _guess_game_from_title(title: str) -> str:
     """Attempt to extract game name from video title."""
-    # Common patterns: "Game Name - Walkthrough", "Game Name Full Walkthrough"
     separators = [" - ", " | ", " : ", " walkthrough", " gameplay", " full "]
     lower_title = title.lower()
     for sep in separators:

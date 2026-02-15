@@ -1,39 +1,16 @@
 """
-YouTube video metadata and transcript extraction service.
+YouTube video metadata and search service.
 
-Uses:
-- youtube-transcript-api v1.2+ (no API key needed) with Webshare residential proxy
-- YouTube Data API v3 (API key required) for metadata (title, duration, channel)
+Uses YouTube Data API v3 (API key required) for metadata and search.
+Video analysis is handled directly by Gemini (no transcript needed).
 """
 
 import re
 import logging
 from typing import Optional
-from config import YOUTUBE_API_KEY, PROXY_USERNAME, PROXY_PASSWORD
+from config import YOUTUBE_API_KEY
 
 logger = logging.getLogger(__name__)
-
-
-def _get_ytt_api():
-    """Create a YouTubeTranscriptApi instance, with proxy if configured."""
-    from youtube_transcript_api import YouTubeTranscriptApi
-
-    if PROXY_USERNAME and PROXY_PASSWORD:
-        try:
-            from youtube_transcript_api.proxies import WebshareProxyConfig
-            logger.info("Using Webshare proxy for YouTube transcript fetching")
-            return YouTubeTranscriptApi(
-                proxy_config=WebshareProxyConfig(
-                    proxy_username=PROXY_USERNAME,
-                    proxy_password=PROXY_PASSWORD,
-                )
-            )
-        except ImportError:
-            logger.warning("WebshareProxyConfig not available, using generic proxy")
-            # Fallback: use generic HTTP proxy via environment
-            pass
-
-    return YouTubeTranscriptApi()
 
 
 def extract_video_id(url: str) -> Optional[str]:
@@ -108,61 +85,12 @@ def get_video_metadata(video_id: str) -> dict:
         raise
 
 
-def _get_transcript_ytt(video_id: str) -> list[dict]:
-    """Fetch transcript using youtube-transcript-api (may be blocked on cloud servers)."""
-    ytt = _get_ytt_api()
-
-    # Try English first
-    try:
-        fetched = ytt.fetch(video_id, languages=["en"])
-        return fetched.to_raw_data()
-    except Exception as e1:
-        logger.warning(f"English transcript not found: {e1}")
-
-    # Try listing all available transcripts
-    try:
-        transcript_list = ytt.list(video_id)
-        for transcript in transcript_list:
-            try:
-                fetched = transcript.translate("en").fetch()
-                return fetched.to_raw_data()
-            except Exception:
-                fetched = transcript.fetch()
-                return fetched.to_raw_data()
-    except Exception as e2:
-        logger.warning(f"Listing transcripts failed: {e2}")
-
-    # Last resort: fetch without language preference
-    fetched = ytt.fetch(video_id)
-    return fetched.to_raw_data()
-
-
-def get_transcript(video_id: str) -> list[dict]:
-    """
-    Fetch the transcript/captions for a YouTube video.
-
-    Returns list of dicts: [{"text": "...", "start": 0.0, "duration": 3.5}, ...]
-
-    Uses youtube-transcript-api with Webshare residential proxy (if configured).
-    """
-    try:
-        return _get_transcript_ytt(video_id)
-    except Exception as e:
-        logger.error(f"Transcript fetch failed for {video_id}: {e}")
-        raise ValueError(
-            f"Could not fetch transcript for video {video_id}. "
-            f"Make sure PROXY_USERNAME and PROXY_PASSWORD are set in Railway "
-            f"with your Webshare residential proxy credentials. "
-            f"Error: {e}"
-        )
-
-
 def search_videos(query: str, max_results: int = 8) -> list[dict]:
     """
     Search YouTube for gameplay/walkthrough videos matching a query.
 
-    Automatically appends 'walkthrough gameplay commentary' to the query
-    to find relevant gaming videos with spoken commentary (needed for transcripts).
+    Automatically appends 'walkthrough gameplay' to the query
+    to find relevant gaming videos.
 
     Returns list of dicts with: video_id, title, channel, thumbnail_url, duration_label
     """
@@ -170,8 +98,8 @@ def search_videos(query: str, max_results: int = 8) -> list[dict]:
         from googleapiclient.discovery import build
         youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
 
-        # Enhance query to target walkthrough/commentary videos
-        search_query = f"{query} walkthrough gameplay commentary"
+        # Enhance query to target walkthrough videos
+        search_query = f"{query} walkthrough gameplay"
 
         # Step 1: Search for videos
         search_response = (
@@ -237,39 +165,3 @@ def search_videos(query: str, max_results: int = 8) -> list[dict]:
     except Exception as e:
         logger.error(f"YouTube search failed: {e}")
         raise
-
-
-def format_transcript_for_analysis(transcript: list[dict]) -> str:
-    """
-    Convert raw transcript entries into a formatted string for LLM analysis.
-
-    Groups text into ~30-second chunks with timestamps for easier analysis.
-    """
-    if not transcript:
-        return ""
-
-    chunks = []
-    current_chunk_text = []
-    current_chunk_start = transcript[0].get("start", 0)
-    chunk_duration = 0
-
-    for entry in transcript:
-        current_chunk_text.append(entry.get("text", ""))
-        chunk_duration += entry.get("duration", 3)
-
-        # Group into ~30-second chunks
-        if chunk_duration >= 30:
-            timestamp = format_duration(int(current_chunk_start))
-            text = " ".join(current_chunk_text)
-            chunks.append(f"[{timestamp}] {text}")
-            current_chunk_text = []
-            current_chunk_start = entry.get("start", 0) + entry.get("duration", 3)
-            chunk_duration = 0
-
-    # Don't forget the last chunk
-    if current_chunk_text:
-        timestamp = format_duration(int(current_chunk_start))
-        text = " ".join(current_chunk_text)
-        chunks.append(f"[{timestamp}] {text}")
-
-    return "\n".join(chunks)
