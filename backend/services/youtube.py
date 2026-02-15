@@ -9,9 +9,31 @@ Uses:
 import re
 import logging
 from typing import Optional
-from config import YOUTUBE_API_KEY
+from config import YOUTUBE_API_KEY, PROXY_USERNAME, PROXY_PASSWORD
 
 logger = logging.getLogger(__name__)
+
+
+def _get_ytt_api():
+    """Create a YouTubeTranscriptApi instance, with proxy if configured."""
+    from youtube_transcript_api import YouTubeTranscriptApi
+
+    if PROXY_USERNAME and PROXY_PASSWORD:
+        try:
+            from youtube_transcript_api.proxies import WebshareProxyConfig
+            logger.info("Using Webshare proxy for YouTube transcript fetching")
+            return YouTubeTranscriptApi(
+                proxy_config=WebshareProxyConfig(
+                    proxy_username=PROXY_USERNAME,
+                    proxy_password=PROXY_PASSWORD,
+                )
+            )
+        except ImportError:
+            logger.warning("WebshareProxyConfig not available, using generic proxy")
+            # Fallback: use generic HTTP proxy via environment
+            pass
+
+    return YouTubeTranscriptApi()
 
 
 def extract_video_id(url: str) -> Optional[str]:
@@ -93,11 +115,10 @@ def get_transcript(video_id: str) -> list[dict]:
     Returns list of dicts: [{"text": "...", "start": 0.0, "duration": 3.5}, ...]
 
     Compatible with youtube-transcript-api v1.2+ (new instance-based API).
+    Uses proxy if configured (needed for cloud deployment — YouTube blocks cloud IPs).
     """
-    from youtube_transcript_api import YouTubeTranscriptApi
-
     try:
-        ytt = YouTubeTranscriptApi()
+        ytt = _get_ytt_api()
 
         # New API (v1.0+): instance-based .fetch() method
         try:
