@@ -15,6 +15,10 @@ CORS_ORIGINS = os.getenv(
 PROXY_USERNAME = os.getenv("PROXY_USERNAME", "")
 PROXY_PASSWORD = os.getenv("PROXY_PASSWORD", "")
 
+# Supadata.ai API key for transcript fetching (free fallback, 200 req/month)
+# Sign up free at https://supadata.ai — no credit card needed
+SUPADATA_API_KEY = os.getenv("SUPADATA_API_KEY", "")
+
 # Claude model to use for analysis
 CLAUDE_MODEL = "claude-sonnet-4-5-20250929"
 

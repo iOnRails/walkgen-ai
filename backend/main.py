@@ -42,6 +42,9 @@ from services.cache import (
     get_popular_walkthroughs,
     search_walkthroughs,
     get_cache_stats,
+    add_comment,
+    get_comments,
+    toggle_reaction,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -120,6 +123,50 @@ async def youtube_search(q: str = Query(..., min_length=2), limit: int = Query(d
         return {"query": q, "results": results}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"YouTube search failed: {str(e)}")
+
+
+# ─── Comments & Reactions ───
+
+@app.get("/api/comments/{video_id}")
+async def list_comments(video_id: str, segment_id: int = Query(default=None)):
+    """Get comments for a video, optionally filtered by segment."""
+    return {"comments": get_comments(video_id, segment_id)}
+
+
+@app.post("/api/comments/{video_id}")
+async def create_comment(video_id: str, body: dict):
+    """Add an anonymous comment to a segment."""
+    text = body.get("text", "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Comment text is required")
+    if len(text) > 1000:
+        raise HTTPException(status_code=400, detail="Comment too long (max 1000 chars)")
+
+    segment_id = body.get("segment_id")
+    if segment_id is None:
+        raise HTTPException(status_code=400, detail="segment_id is required")
+
+    nickname = body.get("nickname", "Anonymous").strip()[:30] or "Anonymous"
+    parent_id = body.get("parent_id")
+
+    comment = add_comment(video_id, segment_id, text, nickname, parent_id)
+    return comment
+
+
+@app.post("/api/reactions/{comment_id}")
+async def react_to_comment(comment_id: int, body: dict):
+    """Toggle a reaction emoji on a comment."""
+    emoji = body.get("emoji", "").strip()
+    session_id = body.get("session_id", "").strip()
+
+    allowed_emojis = ["thumbsup", "fire", "laugh", "heart", "skull", "mind_blown"]
+    if emoji not in allowed_emojis:
+        raise HTTPException(status_code=400, detail=f"Emoji must be one of: {allowed_emojis}")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
+
+    reactions = toggle_reaction(comment_id, emoji, session_id)
+    return {"reactions": reactions}
 
 
 # ─── Analysis ───

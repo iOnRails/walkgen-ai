@@ -56,6 +56,30 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_walkthroughs_created
                 ON walkthroughs(created_at);
 
+            CREATE TABLE IF NOT EXISTS comments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                video_id TEXT NOT NULL,
+                segment_id INTEGER NOT NULL,
+                parent_id INTEGER,
+                nickname TEXT NOT NULL DEFAULT 'Anonymous',
+                text TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (video_id) REFERENCES walkthroughs(video_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS reactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                comment_id INTEGER NOT NULL,
+                emoji TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (comment_id) REFERENCES comments(id),
+                UNIQUE(comment_id, session_id, emoji)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_comments_video_segment
+                ON comments(video_id, segment_id);
+
             CREATE TABLE IF NOT EXISTS analytics (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 video_id TEXT NOT NULL,
@@ -166,7 +190,7 @@ def get_recent_walkthroughs(limit: int = 20) -> list[dict]:
     try:
         rows = conn.execute(
             """SELECT video_id, job_id, video_title, channel, game_title,
-                      duration_label, total_segments, access_count, created_at
+                      duration_label, thumbnail_url, total_segments, access_count, created_at
                FROM walkthroughs
                ORDER BY last_accessed DESC
                LIMIT ?""",
@@ -184,7 +208,7 @@ def get_popular_walkthroughs(limit: int = 10) -> list[dict]:
     try:
         rows = conn.execute(
             """SELECT video_id, job_id, video_title, channel, game_title,
-                      duration_label, total_segments, access_count
+                      duration_label, thumbnail_url, total_segments, access_count
                FROM walkthroughs
                ORDER BY access_count DESC
                LIMIT ?""",
@@ -203,7 +227,7 @@ def search_walkthroughs(query: str, limit: int = 20) -> list[dict]:
         q = f"%{query}%"
         rows = conn.execute(
             """SELECT video_id, job_id, video_title, channel, game_title,
-                      duration_label, total_segments, access_count
+                      duration_label, thumbnail_url, total_segments, access_count
                FROM walkthroughs
                WHERE video_title LIKE ? OR game_title LIKE ? OR channel LIKE ?
                ORDER BY access_count DESC
@@ -212,6 +236,115 @@ def search_walkthroughs(query: str, limit: int = 20) -> list[dict]:
         ).fetchall()
 
         return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+# ─── Comments & Reactions ───
+
+def add_comment(video_id: str, segment_id: int, text: str, nickname: str = "Anonymous", parent_id: int = None) -> dict:
+    """Add an anonymous comment to a segment."""
+    conn = get_connection()
+    try:
+        now = datetime.utcnow().isoformat()
+        cursor = conn.execute(
+            """INSERT INTO comments (video_id, segment_id, parent_id, nickname, text, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (video_id, segment_id, parent_id, nickname or "Anonymous", text, now),
+        )
+        conn.commit()
+        return {
+            "id": cursor.lastrowid,
+            "video_id": video_id,
+            "segment_id": segment_id,
+            "parent_id": parent_id,
+            "nickname": nickname or "Anonymous",
+            "text": text,
+            "created_at": now,
+            "reactions": {},
+            "replies": [],
+        }
+    finally:
+        conn.close()
+
+
+def get_comments(video_id: str, segment_id: int = None) -> list[dict]:
+    """Get comments for a video (optionally filtered by segment). Returns threaded structure."""
+    conn = get_connection()
+    try:
+        if segment_id is not None:
+            rows = conn.execute(
+                "SELECT * FROM comments WHERE video_id = ? AND segment_id = ? ORDER BY created_at ASC",
+                (video_id, segment_id),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM comments WHERE video_id = ? ORDER BY created_at ASC",
+                (video_id,),
+            ).fetchall()
+
+        comments = [dict(row) for row in rows]
+
+        # Get reactions for all comments
+        comment_ids = [c["id"] for c in comments]
+        reactions_map = {}
+        if comment_ids:
+            placeholders = ",".join("?" * len(comment_ids))
+            reaction_rows = conn.execute(
+                f"SELECT comment_id, emoji, COUNT(*) as count FROM reactions WHERE comment_id IN ({placeholders}) GROUP BY comment_id, emoji",
+                comment_ids,
+            ).fetchall()
+            for r in reaction_rows:
+                cid = r["comment_id"]
+                if cid not in reactions_map:
+                    reactions_map[cid] = {}
+                reactions_map[cid][r["emoji"]] = r["count"]
+
+        # Build threaded structure
+        comment_map = {}
+        top_level = []
+        for c in comments:
+            c["reactions"] = reactions_map.get(c["id"], {})
+            c["replies"] = []
+            comment_map[c["id"]] = c
+
+        for c in comments:
+            if c["parent_id"] and c["parent_id"] in comment_map:
+                comment_map[c["parent_id"]]["replies"].append(c)
+            else:
+                top_level.append(c)
+
+        return top_level
+    finally:
+        conn.close()
+
+
+def toggle_reaction(comment_id: int, emoji: str, session_id: str) -> dict:
+    """Toggle a reaction emoji on a comment. Returns updated reaction counts."""
+    conn = get_connection()
+    try:
+        now = datetime.utcnow().isoformat()
+        existing = conn.execute(
+            "SELECT id FROM reactions WHERE comment_id = ? AND session_id = ? AND emoji = ?",
+            (comment_id, session_id, emoji),
+        ).fetchone()
+
+        if existing:
+            conn.execute("DELETE FROM reactions WHERE id = ?", (existing["id"],))
+        else:
+            conn.execute(
+                "INSERT INTO reactions (comment_id, emoji, session_id, created_at) VALUES (?, ?, ?, ?)",
+                (comment_id, emoji, session_id, now),
+            )
+        conn.commit()
+
+        # Return updated counts
+        rows = conn.execute(
+            "SELECT emoji, COUNT(*) as count FROM reactions WHERE comment_id = ? GROUP BY emoji",
+            (comment_id,),
+        ).fetchall()
+
+        return {r["emoji"]: r["count"] for r in rows}
     finally:
         conn.close()
 
