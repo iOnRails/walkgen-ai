@@ -43,6 +43,17 @@ export async function getWalkthrough(jobId) {
   return res.json();
 }
 
+export async function searchYouTube(query) {
+  const res = await fetch(`${API_BASE}/api/youtube/search?q=${encodeURIComponent(query)}`);
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `Search failed (${res.status})`);
+  }
+
+  return res.json();
+}
+
 /**
  * Poll for job completion.
  * Calls onProgress with each status update.

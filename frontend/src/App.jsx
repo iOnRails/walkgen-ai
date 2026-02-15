@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from "react";
-import { startAnalysis, pollUntilComplete } from "./api";
+import { startAnalysis, pollUntilComplete, getJobStatus, searchYouTube } from "./api";
 
 /*──────────────────────────── Constants ────────────────────────────*/
 
@@ -18,6 +18,12 @@ const DIFFS = { easy:"#22c55e", medium:"#eab308", hard:"#f97316", "very hard":"#
 function fmt(sec) {
   const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
   return h > 0 ? `${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}` : `${m}:${String(s).padStart(2,"0")}`;
+}
+
+function fmtViews(n) {
+  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M views`;
+  if (n >= 1000) return `${(n / 1000).toFixed(0)}K views`;
+  return `${n} views`;
 }
 
 /*──────────────────────────── Small Components ────────────────────────────*/
@@ -110,11 +116,49 @@ function SegCard({ seg, active, onClick }) {
   );
 }
 
+/* ── Video Search Result Card ── */
+function VideoCard({ video, onAnalyze }) {
+  return (
+    <div style={{
+      display:"flex", gap:14, padding:14, borderRadius:10, border:"1px solid #e2e8f0",
+      background:"#fff", cursor:"pointer", transition:"all 0.15s",
+    }}
+    onClick={() => onAnalyze(video.url)}
+    onMouseEnter={(e) => e.currentTarget.style.borderColor = "#6366f1"}
+    onMouseLeave={(e) => e.currentTarget.style.borderColor = "#e2e8f0"}
+    >
+      {video.thumbnail_url && (
+        <div style={{ flexShrink:0, width:160, height:90, borderRadius:8, overflow:"hidden", background:"#1e293b" }}>
+          <img src={video.thumbnail_url} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }} />
+        </div>
+      )}
+      <div style={{ flex:1, minWidth:0 }}>
+        <div style={{ fontWeight:700, fontSize:14, color:"#1e293b", marginBottom:4, overflow:"hidden", textOverflow:"ellipsis", display:"-webkit-box", WebkitLineClamp:2, WebkitBoxOrient:"vertical" }}>
+          {video.title}
+        </div>
+        <div style={{ fontSize:12, color:"#64748b", marginBottom:6 }}>
+          {video.channel} {video.duration_label ? `| ${video.duration_label}` : ""} {video.views ? `| ${fmtViews(video.views)}` : ""}
+        </div>
+        <button
+          onClick={(e) => { e.stopPropagation(); onAnalyze(video.url); }}
+          style={{ padding:"6px 16px", borderRadius:6, border:"none", background:"#6366f1", color:"#fff", fontSize:12, fontWeight:600, cursor:"pointer" }}
+        >
+          Analyze This Video
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /*──────────────────────────── Main App ────────────────────────────*/
 
 export default function App() {
-  const [stage, setStage] = useState("pick"); // pick | processing | result
+  const [stage, setStage] = useState("pick"); // pick | searching | processing | result
+  const [inputMode, setInputMode] = useState("search"); // search | url
   const [url, setUrl] = useState("");
+  const [aiQuery, setAiQuery] = useState("");
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchLoading, setSearchLoading] = useState(false);
   const [err, setErr] = useState("");
   const [progress, setProgress] = useState(0);
   const [statusMsg, setStatusMsg] = useState("");
@@ -124,20 +168,40 @@ export default function App() {
   const [time, setTime] = useState(0);
 
   const back = useCallback(() => {
-    setStage("pick"); setUrl(""); setErr(""); setWalkthrough(null);
+    setStage("pick"); setUrl(""); setAiQuery(""); setErr(""); setWalkthrough(null);
     setSearch(""); setFilters([]); setTime(0); setProgress(0); setStatusMsg("");
+    setSearchResults([]); setSearchLoading(false);
   }, []);
 
-  const handleAnalyze = useCallback(async () => {
-    if (!url.trim()) { setErr("Please enter a URL"); return; }
+  /* ── AI Search: find videos on YouTube ── */
+  const handleSearch = useCallback(async () => {
+    if (!aiQuery.trim()) { setErr("Describe what you're looking for"); return; }
+    setErr(""); setSearchLoading(true); setSearchResults([]);
+
+    try {
+      const data = await searchYouTube(aiQuery);
+      setSearchResults(data.results || []);
+      if ((data.results || []).length === 0) {
+        setErr("No walkthrough videos found. Try different keywords.");
+      }
+    } catch (e) {
+      setErr(e.message || "Search failed");
+    } finally {
+      setSearchLoading(false);
+    }
+  }, [aiQuery]);
+
+  /* ── Analyze a video (from URL or search result) ── */
+  const handleAnalyze = useCallback(async (videoUrl) => {
+    const targetUrl = videoUrl || url;
+    if (!targetUrl.trim()) { setErr("Please enter a URL"); return; }
     setErr(""); setStage("processing"); setProgress(5); setStatusMsg("Starting analysis...");
 
     try {
-      const { job_id, status } = await startAnalysis(url);
+      const { job_id, status } = await startAnalysis(targetUrl);
 
       if (status === "complete") {
-        // Already analyzed
-        const statusData = await (await fetch(`http://localhost:8000/api/status/${job_id}`)).json();
+        const statusData = await getJobStatus(job_id);
         setWalkthrough(statusData.walkthrough);
         setStage("result");
         return;
@@ -271,49 +335,139 @@ export default function App() {
       <div style={{ maxWidth:600, margin:"0 auto", padding:"48px 16px" }}>
         <div style={{ textAlign:"center", marginBottom:32 }}>
           <h1 style={{ fontSize:28, fontWeight:800, color:"#1e293b", marginBottom:8 }}>
-            Paste a YouTube Link.{"\n"}Get a Smart Walkthrough.
+            Ask AI to Find Your Walkthrough
           </h1>
           <p style={{ color:"#64748b", fontSize:14, maxWidth:460, margin:"0 auto", lineHeight:1.6 }}>
-            Our AI watches the video transcript and automatically identifies boss fights, puzzles,
-            collectibles, and more — creating a fully searchable guide.
+            Describe what you need help with in any game. AI finds the best walkthrough videos
+            and creates a searchable guide with boss fights, puzzles, collectibles, and more.
           </p>
         </div>
 
-        <div style={{ background:"#fff", borderRadius:12, padding:24, border:"1px solid #e2e8f0", marginBottom:20 }}>
-          <div style={{ fontWeight:700, fontSize:14, marginBottom:10, color:"#1e293b" }}>Paste a YouTube Video URL</div>
-          <div style={{ display:"flex", gap:8 }}>
-            <input
-              value={url}
-              onChange={(e) => { setUrl(e.target.value); setErr(""); }}
-              onKeyDown={(e) => e.key === "Enter" && handleAnalyze()}
-              placeholder="https://youtube.com/watch?v=..."
-              style={{ flex:1, padding:"12px 14px", border:"1px solid #e2e8f0", borderRadius:8, fontSize:14, outline:"none" }}
-            />
-            <button onClick={handleAnalyze}
-              style={{ padding:"12px 24px", borderRadius:8, border:"none", background:"#6366f1", color:"#fff", fontWeight:700, fontSize:14, cursor:"pointer", whiteSpace:"nowrap" }}>
-              Analyze
-            </button>
-          </div>
-          {err && <div style={{ color:"#ef4444", fontSize:13, marginTop:8 }}>{err}</div>}
-          <div style={{ fontSize:12, color:"#94a3b8", marginTop:10 }}>
-            Works with any gameplay walkthrough video that has captions/subtitles enabled.
-          </div>
+        {/* Tab switcher */}
+        <div style={{ display:"flex", gap:0, marginBottom:0 }}>
+          <button
+            onClick={() => setInputMode("search")}
+            style={{
+              flex:1, padding:"10px 0", border:"1px solid #e2e8f0", borderBottom: inputMode === "search" ? "2px solid #6366f1" : "1px solid #e2e8f0",
+              background: inputMode === "search" ? "#fff" : "#f8fafc", color: inputMode === "search" ? "#6366f1" : "#94a3b8",
+              fontWeight:700, fontSize:13, cursor:"pointer", borderRadius:"8px 0 0 0",
+            }}
+          >
+            AI Search
+          </button>
+          <button
+            onClick={() => setInputMode("url")}
+            style={{
+              flex:1, padding:"10px 0", border:"1px solid #e2e8f0", borderBottom: inputMode === "url" ? "2px solid #6366f1" : "1px solid #e2e8f0",
+              background: inputMode === "url" ? "#fff" : "#f8fafc", color: inputMode === "url" ? "#6366f1" : "#94a3b8",
+              fontWeight:700, fontSize:13, cursor:"pointer", borderRadius:"0 8px 0 0",
+            }}
+          >
+            Paste URL
+          </button>
         </div>
 
-        {/* How it works */}
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:12 }}>
-          {[
-            { step:"1", title:"Paste URL", desc:"Drop any YouTube gameplay video link" },
-            { step:"2", title:"AI Analyzes", desc:"Transcript is analyzed for game segments" },
-            { step:"3", title:"Get Guide", desc:"Searchable walkthrough with timestamps" },
-          ].map(({ step, title, desc }) => (
-            <div key={step} style={{ padding:16, borderRadius:10, background:"#fff", border:"1px solid #e2e8f0", textAlign:"center" }}>
-              <div style={{ width:28, height:28, borderRadius:999, background:"#6366f1", color:"#fff", fontWeight:700, fontSize:13, display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 8px" }}>{step}</div>
-              <div style={{ fontWeight:700, fontSize:13, color:"#1e293b", marginBottom:4 }}>{title}</div>
-              <div style={{ fontSize:11, color:"#94a3b8" }}>{desc}</div>
-            </div>
-          ))}
+        <div style={{ background:"#fff", borderRadius:"0 0 12px 12px", padding:24, border:"1px solid #e2e8f0", borderTop:"none", marginBottom:20 }}>
+
+          {/* ── AI Search mode ── */}
+          {inputMode === "search" && (
+            <>
+              <div style={{ fontWeight:700, fontSize:14, marginBottom:10, color:"#1e293b" }}>
+                What do you need a walkthrough for?
+              </div>
+              <div style={{ display:"flex", gap:8 }}>
+                <input
+                  value={aiQuery}
+                  onChange={(e) => { setAiQuery(e.target.value); setErr(""); }}
+                  onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+                  placeholder='e.g. "how to collect insult lines in Monkey Island"'
+                  style={{ flex:1, padding:"12px 14px", border:"1px solid #e2e8f0", borderRadius:8, fontSize:14, outline:"none" }}
+                />
+                <button onClick={handleSearch} disabled={searchLoading}
+                  style={{ padding:"12px 24px", borderRadius:8, border:"none", background: searchLoading ? "#a5b4fc" : "#6366f1", color:"#fff", fontWeight:700, fontSize:14, cursor: searchLoading ? "wait" : "pointer", whiteSpace:"nowrap" }}>
+                  {searchLoading ? "Searching..." : "Find Videos"}
+                </button>
+              </div>
+              <div style={{ fontSize:12, color:"#94a3b8", marginTop:10 }}>
+                Describe what you need help with in natural language. We'll find the best walkthrough videos on YouTube.
+              </div>
+
+              {/* Example queries */}
+              {searchResults.length === 0 && !searchLoading && !err && (
+                <div style={{ marginTop:16, display:"flex", flexWrap:"wrap", gap:6 }}>
+                  <span style={{ fontSize:11, color:"#94a3b8", marginRight:4, lineHeight:"26px" }}>Try:</span>
+                  {[
+                    "Elden Ring how to beat Malenia",
+                    "Zelda TotK all shrine locations",
+                    "Monkey Island insult sword fighting",
+                    "Baldur's Gate 3 Shadowheart quest",
+                  ].map((q) => (
+                    <button key={q} onClick={() => { setAiQuery(q); }}
+                      style={{ padding:"4px 10px", borderRadius:999, border:"1px solid #e2e8f0", background:"#f8fafc", color:"#64748b", fontSize:11, cursor:"pointer" }}>
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+
+          {/* ── URL paste mode ── */}
+          {inputMode === "url" && (
+            <>
+              <div style={{ fontWeight:700, fontSize:14, marginBottom:10, color:"#1e293b" }}>Paste a YouTube Video URL</div>
+              <div style={{ display:"flex", gap:8 }}>
+                <input
+                  value={url}
+                  onChange={(e) => { setUrl(e.target.value); setErr(""); }}
+                  onKeyDown={(e) => e.key === "Enter" && handleAnalyze()}
+                  placeholder="https://youtube.com/watch?v=..."
+                  style={{ flex:1, padding:"12px 14px", border:"1px solid #e2e8f0", borderRadius:8, fontSize:14, outline:"none" }}
+                />
+                <button onClick={() => handleAnalyze()}
+                  style={{ padding:"12px 24px", borderRadius:8, border:"none", background:"#6366f1", color:"#fff", fontWeight:700, fontSize:14, cursor:"pointer", whiteSpace:"nowrap" }}>
+                  Analyze
+                </button>
+              </div>
+              <div style={{ fontSize:12, color:"#94a3b8", marginTop:10 }}>
+                Works with any gameplay walkthrough video that has captions/subtitles enabled.
+              </div>
+            </>
+          )}
+
+          {err && <div style={{ color:"#ef4444", fontSize:13, marginTop:8 }}>{err}</div>}
         </div>
+
+        {/* ── Search Results ── */}
+        {searchResults.length > 0 && (
+          <div style={{ marginBottom:20 }}>
+            <div style={{ fontWeight:700, fontSize:14, color:"#1e293b", marginBottom:10 }}>
+              Found {searchResults.length} walkthrough videos — pick one to analyze:
+            </div>
+            <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+              {searchResults.map((video) => (
+                <VideoCard key={video.video_id} video={video} onAnalyze={handleAnalyze} />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* How it works */}
+        {searchResults.length === 0 && (
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:12 }}>
+            {[
+              { step:"1", title: inputMode === "search" ? "Describe" : "Paste URL", desc: inputMode === "search" ? "Tell AI what walkthrough you need" : "Drop any YouTube gameplay video link" },
+              { step:"2", title:"AI Analyzes", desc:"Transcript is analyzed for game segments" },
+              { step:"3", title:"Get Guide", desc:"Searchable walkthrough with timestamps" },
+            ].map(({ step, title, desc }) => (
+              <div key={step} style={{ padding:16, borderRadius:10, background:"#fff", border:"1px solid #e2e8f0", textAlign:"center" }}>
+                <div style={{ width:28, height:28, borderRadius:999, background:"#6366f1", color:"#fff", fontWeight:700, fontSize:13, display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 8px" }}>{step}</div>
+                <div style={{ fontWeight:700, fontSize:13, color:"#1e293b", marginBottom:4 }}>{title}</div>
+                <div style={{ fontSize:11, color:"#94a3b8" }}>{desc}</div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
