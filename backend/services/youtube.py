@@ -2,7 +2,7 @@
 YouTube video metadata and transcript extraction service.
 
 Uses:
-- youtube-transcript-api (no API key needed) for captions/transcripts
+- youtube-transcript-api v1.2+ (no API key needed) for captions/transcripts
 - YouTube Data API v3 (API key required) for metadata (title, duration, channel)
 """
 
@@ -92,63 +92,39 @@ def get_transcript(video_id: str) -> list[dict]:
 
     Returns list of dicts: [{"text": "...", "start": 0.0, "duration": 3.5}, ...]
 
-    Compatible with youtube-transcript-api v0.6.x
+    Compatible with youtube-transcript-api v1.2+ (new instance-based API).
     """
+    from youtube_transcript_api import YouTubeTranscriptApi
+
     try:
-        from youtube_transcript_api import YouTubeTranscriptApi
+        ytt = YouTubeTranscriptApi()
 
-        # Try fetching directly — simplest approach, works on most versions
+        # New API (v1.0+): instance-based .fetch() method
         try:
-            raw = YouTubeTranscriptApi.get_transcript(video_id, languages=["en"])
-            # Normalize: ensure each entry has text, start, duration
-            return [
-                {
-                    "text": str(entry.get("text", entry.get("value", ""))),
-                    "start": float(entry.get("start", entry.get("offset", 0))),
-                    "duration": float(entry.get("duration", 3)),
-                }
-                for entry in raw
-            ]
+            fetched = ytt.fetch(video_id, languages=["en"])
+            # .to_raw_data() returns list of dicts with text, start, duration
+            return fetched.to_raw_data()
         except Exception as e1:
-            logger.warning(f"Direct transcript fetch failed: {e1}, trying fallback...")
+            logger.warning(f"English transcript not found, trying any language: {e1}")
 
-        # Fallback: list transcripts and pick one
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-
-        transcript = None
+        # Try listing all available transcripts and pick one
         try:
-            transcript = transcript_list.find_manually_created_transcript(["en"])
-        except Exception:
-            try:
-                transcript = transcript_list.find_generated_transcript(["en"])
-            except Exception:
-                for t in transcript_list:
-                    transcript = t.translate("en")
-                    break
+            transcript_list = ytt.list(video_id)
+            for transcript in transcript_list:
+                try:
+                    # Try to translate to English
+                    fetched = transcript.translate("en").fetch()
+                    return fetched.to_raw_data()
+                except Exception:
+                    # Just use whatever language is available
+                    fetched = transcript.fetch()
+                    return fetched.to_raw_data()
+        except Exception as e2:
+            logger.warning(f"Listing transcripts failed: {e2}")
 
-        if transcript is None:
-            raise ValueError(f"No transcript available for video {video_id}")
-
-        raw = transcript.fetch()
-
-        # Normalize output format
-        result = []
-        for entry in raw:
-            if isinstance(entry, dict):
-                result.append({
-                    "text": str(entry.get("text", "")),
-                    "start": float(entry.get("start", 0)),
-                    "duration": float(entry.get("duration", 3)),
-                })
-            else:
-                # Some versions return objects with attributes
-                result.append({
-                    "text": str(getattr(entry, "text", getattr(entry, "value", ""))),
-                    "start": float(getattr(entry, "start", getattr(entry, "offset", 0))),
-                    "duration": float(getattr(entry, "duration", 3)),
-                })
-
-        return result
+        # Last resort: fetch without language preference
+        fetched = ytt.fetch(video_id)
+        return fetched.to_raw_data()
 
     except Exception as e:
         logger.error(f"Failed to fetch transcript for {video_id}: {e}")
@@ -166,11 +142,11 @@ def format_transcript_for_analysis(transcript: list[dict]) -> str:
 
     chunks = []
     current_chunk_text = []
-    current_chunk_start = transcript[0]["start"]
+    current_chunk_start = transcript[0].get("start", 0)
     chunk_duration = 0
 
     for entry in transcript:
-        current_chunk_text.append(entry["text"])
+        current_chunk_text.append(entry.get("text", ""))
         chunk_duration += entry.get("duration", 3)
 
         # Group into ~30-second chunks
@@ -179,7 +155,7 @@ def format_transcript_for_analysis(transcript: list[dict]) -> str:
             text = " ".join(current_chunk_text)
             chunks.append(f"[{timestamp}] {text}")
             current_chunk_text = []
-            current_chunk_start = entry["start"] + entry.get("duration", 3)
+            current_chunk_start = entry.get("start", 0) + entry.get("duration", 3)
             chunk_duration = 0
 
     # Don't forget the last chunk
