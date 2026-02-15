@@ -131,6 +131,7 @@ Return the complete JSON analysis covering the entire video."""
                 system_instruction=SYSTEM_PROMPT,
                 max_output_tokens=8000,
                 temperature=0.3,
+                response_mime_type="application/json",
             ),
         )
 
@@ -159,27 +160,26 @@ def _clean_json_string(text: str) -> str:
     text = re.sub(r"//.*?$", "", text, flags=re.MULTILINE)
     # Remove control characters except newline and tab
     text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)
+    # Fix unescaped newlines inside JSON string values
+    text = re.sub(r'(?<=": ")(.*?)(?=")', lambda m: m.group(0).replace("\n", "\\n"), text)
     return text
 
 
-def _extract_json(text: str) -> dict:
-    """Extract JSON from Gemini's response, handling markdown code blocks."""
-    # Try code block first
-    code_block = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
-    if code_block:
-        raw = code_block.group(1)
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            return json.loads(_clean_json_string(raw))
-
-    # Try parsing the whole response as JSON
+def _try_parse_json(text: str) -> dict:
+    """Try to parse JSON, with progressively aggressive cleaning."""
+    # Attempt 1: raw
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
 
-    # Try to find JSON object in the text
+    # Attempt 2: basic cleanup
+    try:
+        return json.loads(_clean_json_string(text))
+    except json.JSONDecodeError:
+        pass
+
+    # Attempt 3: strip everything outside the outermost { }
     brace_start = text.find("{")
     brace_end = text.rfind("}") + 1
     if brace_start >= 0 and brace_end > brace_start:
@@ -187,9 +187,23 @@ def _extract_json(text: str) -> dict:
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
+            pass
+        try:
             return json.loads(_clean_json_string(raw))
+        except json.JSONDecodeError:
+            pass
 
-    raise ValueError("Could not extract JSON from response")
+    raise ValueError("Could not parse JSON from response")
+
+
+def _extract_json(text: str) -> dict:
+    """Extract JSON from Gemini's response, handling markdown code blocks."""
+    # Try code block first
+    code_block = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
+    if code_block:
+        return _try_parse_json(code_block.group(1))
+
+    return _try_parse_json(text)
 
 
 def _validate_segments(segments: list[dict], total_duration: int) -> list[dict]:
