@@ -131,6 +131,88 @@ def get_transcript(video_id: str) -> list[dict]:
         raise
 
 
+def search_videos(query: str, max_results: int = 8) -> list[dict]:
+    """
+    Search YouTube for gameplay/walkthrough videos matching a query.
+
+    Automatically appends 'walkthrough gameplay commentary' to the query
+    to find relevant gaming videos with spoken commentary (needed for transcripts).
+
+    Returns list of dicts with: video_id, title, channel, thumbnail_url, duration_label
+    """
+    try:
+        from googleapiclient.discovery import build
+        youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
+
+        # Enhance query to target walkthrough/commentary videos
+        search_query = f"{query} walkthrough gameplay commentary"
+
+        # Step 1: Search for videos
+        search_response = (
+            youtube.search()
+            .list(
+                q=search_query,
+                part="snippet",
+                type="video",
+                maxResults=max_results,
+                order="relevance",
+                videoCategoryId="20",  # Gaming category
+            )
+            .execute()
+        )
+
+        if not search_response.get("items"):
+            return []
+
+        # Step 2: Get durations for all results (requires separate API call)
+        video_ids = [item["id"]["videoId"] for item in search_response["items"]]
+        details_response = (
+            youtube.videos()
+            .list(part="contentDetails,statistics", id=",".join(video_ids))
+            .execute()
+        )
+
+        # Build duration map
+        duration_map = {}
+        views_map = {}
+        for item in details_response.get("items", []):
+            vid = item["id"]
+            dur_sec = parse_iso_duration(item["contentDetails"]["duration"])
+            duration_map[vid] = {
+                "seconds": dur_sec,
+                "label": format_duration(dur_sec),
+            }
+            views_map[vid] = int(item.get("statistics", {}).get("viewCount", 0))
+
+        # Step 3: Build results
+        results = []
+        for item in search_response["items"]:
+            vid = item["id"]["videoId"]
+            snippet = item["snippet"]
+            dur = duration_map.get(vid, {"seconds": 0, "label": "?"})
+
+            # Skip very short videos (< 2 min) — unlikely to be walkthroughs
+            if dur["seconds"] < 120:
+                continue
+
+            results.append({
+                "video_id": vid,
+                "title": snippet["title"],
+                "channel": snippet["channelTitle"],
+                "thumbnail_url": snippet["thumbnails"].get("high", snippet["thumbnails"].get("default", {})).get("url", ""),
+                "duration_seconds": dur["seconds"],
+                "duration_label": dur["label"],
+                "views": views_map.get(vid, 0),
+                "url": f"https://www.youtube.com/watch?v={vid}",
+            })
+
+        return results
+
+    except Exception as e:
+        logger.error(f"YouTube search failed: {e}")
+        raise
+
+
 def format_transcript_for_analysis(transcript: list[dict]) -> str:
     """
     Convert raw transcript entries into a formatted string for LLM analysis.
