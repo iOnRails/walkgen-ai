@@ -151,11 +151,27 @@ Return the complete JSON analysis covering the entire video."""
         raise
 
 
+def _clean_json_string(text: str) -> str:
+    """Fix common JSON issues from LLM responses."""
+    # Remove trailing commas before } or ]
+    text = re.sub(r",\s*([}\]])", r"\1", text)
+    # Remove single-line comments
+    text = re.sub(r"//.*?$", "", text, flags=re.MULTILINE)
+    # Remove control characters except newline and tab
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)
+    return text
+
+
 def _extract_json(text: str) -> dict:
     """Extract JSON from Gemini's response, handling markdown code blocks."""
+    # Try code block first
     code_block = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
     if code_block:
-        return json.loads(code_block.group(1))
+        raw = code_block.group(1)
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return json.loads(_clean_json_string(raw))
 
     # Try parsing the whole response as JSON
     try:
@@ -167,7 +183,11 @@ def _extract_json(text: str) -> dict:
     brace_start = text.find("{")
     brace_end = text.rfind("}") + 1
     if brace_start >= 0 and brace_end > brace_start:
-        return json.loads(text[brace_start:brace_end])
+        raw = text[brace_start:brace_end]
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return json.loads(_clean_json_string(raw))
 
     raise ValueError("Could not extract JSON from response")
 
