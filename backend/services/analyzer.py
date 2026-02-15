@@ -14,7 +14,14 @@ from models import Segment, SegmentType, Difficulty
 
 logger = logging.getLogger(__name__)
 
-client = Anthropic(api_key=ANTHROPIC_API_KEY)
+_client = None
+
+def get_client():
+    """Lazy init so the app starts even if the key isn't set yet."""
+    global _client
+    if _client is None:
+        _client = Anthropic(api_key=ANTHROPIC_API_KEY)
+    return _client
 
 SYSTEM_PROMPT = """You are WalkGen AI, an expert video game walkthrough analyst. Your job is to analyze
 gameplay video transcripts and identify distinct segments with their types.
@@ -119,7 +126,7 @@ Return the complete JSON analysis."""
         )
 
     try:
-        response = client.messages.create(
+        response = get_client().messages.create(
             model=CLAUDE_MODEL,
             max_tokens=8000,
             system=SYSTEM_PROMPT,
@@ -176,7 +183,7 @@ TRANSCRIPT SECTION:
 Return JSON with segments found in this section only."""
 
         try:
-            response = client.messages.create(
+            response = get_client().messages.create(
                 model=CLAUDE_MODEL,
                 max_tokens=4000,
                 system=SYSTEM_PROMPT,
